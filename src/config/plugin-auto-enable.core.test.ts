@@ -978,7 +978,7 @@ describe("applyPluginAutoEnable core", () => {
     const result = applyPluginAutoEnable({
       config: {
         plugins: { entries },
-      },
+      } as unknown as OpenClawConfig,
       env,
     });
 
@@ -1006,7 +1006,7 @@ describe("applyPluginAutoEnable core", () => {
           allow: ["existing"],
           entries,
         },
-      },
+      } as unknown as OpenClawConfig,
       candidates: [],
       env,
       manifestRegistry: makeRegistry([{ id: "mockplugin", channels: [] }]),
