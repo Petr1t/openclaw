@@ -1,26 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
+  canAutoscrubPullRequest,
   dependencyGuardCommentHeadSha,
   dependencyFieldChanges,
   dependencyOverrideExpectedSha,
   findDependencyOverrideCommand,
   findDependencyOverrideCommandAsync,
+  isAutoscrubbedDependencyComment,
   isDependencyGuardAuthorizedForHead,
   isDependencyFile,
   isDependencyManifest,
   isPackageLockfile,
   renderAuthorizedDependencyComment,
+  renderAutoscrubbedDependencyComment,
   renderBlockedDependencyComment,
   renderClearedDependencyGuardComment,
   sanitizeDisplayValue,
   securityApproverSet,
+  shouldAutoscrubDependencyLockfiles,
 } from "../../scripts/github/dependency-guard.mjs";
 
 const headSha = "a".repeat(40);
 const staleSha = "b".repeat(40);
 
 describe("dependency guard script", () => {
-  it("detects dependency awareness file surfaces", () => {
+  it("detects dependency guard file surfaces", () => {
     expect(isDependencyFile("pnpm-lock.yaml")).toBe(true);
     expect(isDependencyFile("package.json")).toBe(false);
     expect(isDependencyFile("ui/package.json")).toBe(false);
@@ -248,6 +252,101 @@ describe("dependency guard script", () => {
     expect(body).toContain(
       "git checkout 'origin/release/canary branch' -- 'dir with spaces/pnpm-lock.yaml' 'safe/quote'\\''$(touch bad);/package-lock.json'",
     );
+  });
+
+  it("autoscrubs only lockfile changes with no dependency manifest changes", () => {
+    expect(
+      shouldAutoscrubDependencyLockfiles({
+        lockfileChanges: ["pnpm-lock.yaml"],
+        dependencyManifestChanges: [],
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoscrubDependencyLockfiles({
+        lockfileChanges: ["pnpm-lock.yaml"],
+        dependencyManifestChanges: [{ path: "package.json", fields: ["dependencies"] }],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoscrubDependencyLockfiles({
+        lockfileChanges: [],
+        dependencyManifestChanges: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("only attempts autoscrub on same-repository PR branches", () => {
+    const sameRepoPullRequest = {
+      head: {
+        ref: "contributor/change",
+        repo: { full_name: "openclaw/openclaw" },
+        sha: headSha,
+      },
+    };
+    const forkPullRequest = {
+      head: {
+        ref: "contributor/change",
+        repo: { full_name: "external/openclaw" },
+        sha: headSha,
+      },
+    };
+
+    expect(
+      canAutoscrubPullRequest({
+        owner: "openclaw",
+        repo: "openclaw",
+        pullRequest: sameRepoPullRequest,
+      }),
+    ).toBe(true);
+    expect(
+      canAutoscrubPullRequest({
+        owner: "openclaw",
+        repo: "openclaw",
+        pullRequest: forkPullRequest,
+      }),
+    ).toBe(false);
+  });
+
+  it("renders deterministic autoscrub success comments", () => {
+    const body = renderAutoscrubbedDependencyComment({
+      baseBranch: "main",
+      commitSha: staleSha,
+      lockfileChanges: ["pnpm-lock.yaml", "extensions/slack/npm-shrinkwrap.json"],
+    });
+
+    expect(body).toContain("<!-- openclaw:dependency-graph-guard -->");
+    expect(body).toContain("Dependency lockfile changes were removed");
+    expect(body).toContain("did not change dependency graph fields in package manifests");
+    expect(body).toContain("`pnpm-lock.yaml`");
+    expect(body).toContain("`extensions/slack/npm-shrinkwrap.json`");
+    expect(body).toContain(`Cleanup commit: \`${staleSha}\``);
+    expect(isAutoscrubbedDependencyComment({ body })).toBe(true);
+  });
+
+  it("renders fork and dependency-manifest autoscrub guidance", () => {
+    const forkBody = renderBlockedDependencyComment({
+      baseBranch: "main",
+      headSha,
+      lockfileChanges: ["pnpm-lock.yaml"],
+      dependencyManifestChanges: [],
+      autoscrubStatus: { kind: "not-attempted" },
+    });
+    const unsafeBody = renderBlockedDependencyComment({
+      baseBranch: "main",
+      headSha,
+      lockfileChanges: ["pnpm-lock.yaml"],
+      dependencyManifestChanges: [],
+      autoscrubStatus: {
+        kind: "blocked-by-dependency-manifest-fields",
+        changes: [{ path: "package.json", fields: ["dependencies"] }],
+      },
+    });
+
+    expect(forkBody).toContain("Auto-scrub was not attempted");
+    expect(forkBody).toContain("only push deterministic cleanup commits to PR branches");
+    expect(unsafeBody).toContain("changes package manifest dependency graph fields");
+    expect(unsafeBody).toContain("`package.json` changed `dependencies`");
+    expect(unsafeBody).toContain("Dependency graph changes must be reviewed by security");
   });
 
   it("renders a cleared guard comment that preserves approval freshness", () => {

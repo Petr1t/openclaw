@@ -36,14 +36,14 @@ describe("dependency guard workflow", () => {
     expect(parsed.jobs?.["dependency-guard"]?.name).toBeUndefined();
   });
 
-  it("uses a metadata-only pull_request_target workflow with minimal write permissions", () => {
+  it("uses a metadata-only pull_request_target workflow with bounded write permissions", () => {
     const workflow = readFileSync(WORKFLOW, "utf8");
     const parsed = readWorkflow();
 
     expect(workflow).toContain("pull_request_target:");
     expect(workflow).toContain("checks trusted base script only; never checks out PR head");
     expect(parsed.permissions).toEqual({
-      contents: "read",
+      contents: "write",
       "pull-requests": "write",
       issues: "write",
     });
@@ -114,7 +114,31 @@ describe("dependency guard workflow", () => {
     expect(script).toContain("/memberships/");
     expect(script).toContain("isCommentNewerThan");
     expect(script).toContain("A later push requires a fresh approval.");
+    expect(script).toContain("createAutoscrubCommit");
+    expect(script).toContain("Remove dependency lockfile change");
     expect(script).toContain("process.exitCode = 1");
+  });
+
+  it("cleans dependency label and guard comment after successful autoscrub", () => {
+    const script = readFileSync("scripts/github/dependency-guard.mjs", "utf8");
+    const autoscrubCommitIndex = script.indexOf("const commit = await createAutoscrubCommit");
+    const removeLabelIndex = script.indexOf(
+      "await removeLabelIfPresent(dependencyChangedLabel)",
+      autoscrubCommitIndex,
+    );
+    const deleteCommentIndex = script.indexOf(
+      "await deleteCommentIfPresent(dependencyComment)",
+      autoscrubCommitIndex,
+    );
+    const autoscrubCommentIndex = script.indexOf(
+      "renderAutoscrubbedDependencyComment",
+      autoscrubCommitIndex,
+    );
+
+    expect(autoscrubCommitIndex).toBeGreaterThan(0);
+    expect(removeLabelIndex).toBeGreaterThan(autoscrubCommitIndex);
+    expect(deleteCommentIndex).toBeGreaterThan(autoscrubCommitIndex);
+    expect(autoscrubCommentIndex).toBeGreaterThan(deleteCommentIndex);
   });
 
   it("requires secops review for future workflow or guard changes", () => {

@@ -63,6 +63,25 @@ export function dependencyFieldChanges(baseManifest, headManifest) {
   return changes;
 }
 
+export function shouldAutoscrubDependencyLockfiles({
+  lockfileChanges,
+  dependencyManifestChanges = [],
+}) {
+  return lockfileChanges.length > 0 && dependencyManifestChanges.length === 0;
+}
+
+export function canAutoscrubPullRequest({ owner, repo, pullRequest }) {
+  const baseRepository = `${owner}/${repo}`;
+  const headRepository = pullRequest.head?.repo?.full_name;
+  return (
+    headRepository === baseRepository &&
+    typeof pullRequest.head?.ref === "string" &&
+    pullRequest.head.ref.length > 0 &&
+    typeof pullRequest.head?.sha === "string" &&
+    pullRequest.head.sha.length > 0
+  );
+}
+
 function stableJson(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return JSON.stringify(value);
@@ -215,7 +234,7 @@ export function renderDependencyAwarenessComment(dependencyFiles) {
   return [
     dependencyChangeMarker,
     "",
-    "### Dependency Changes Detected",
+    "### Dependency Guard",
     "",
     "This PR changes dependency-related files. Maintainers should confirm these changes are intentional.",
     "",
@@ -248,6 +267,34 @@ export function renderAuthorizedDependencyComment(override) {
   return lines.join("\n");
 }
 
+export function renderAutoscrubbedDependencyComment({
+  baseBranch,
+  lockfileChanges,
+  commitSha,
+}) {
+  const safeBranch = sanitizeDisplayValue(baseBranch ?? "main");
+  const fileLines = lockfileChanges.map((path) => `- ${markdownCode(path)}`);
+  return [
+    dependencyGraphGuardMarker,
+    "",
+    "### Dependency lockfile changes were removed",
+    "",
+    "OpenClaw does not accept package lockfile changes through PRs. This PR did not change dependency graph fields in package manifests, so the workflow restored the lockfile residue from the target branch automatically.",
+    "",
+    "Restored lockfiles:",
+    ...fileLines,
+    "",
+    `- Target branch: ${markdownCode(safeBranch)}`,
+    `- Cleanup commit: ${markdownCode(commitSha)}`,
+    "",
+    "No action is needed unless this PR intentionally requires a dependency update. If it does, mention that in the PR and a maintainer will handle the dependency update internally.",
+  ].join("\n");
+}
+
+export function isAutoscrubbedDependencyComment(comment) {
+  return comment?.body?.includes("### Dependency lockfile changes were removed") === true;
+}
+
 export function renderClearedDependencyGuardComment({ headSha }) {
   return [
     dependencyGraphGuardMarker,
@@ -265,6 +312,7 @@ export function renderBlockedDependencyComment({
   headSha,
   lockfileChanges,
   dependencyManifestChanges,
+  autoscrubStatus,
 }) {
   const safeBranch = sanitizeDisplayValue(baseBranch ?? "main");
   const baseRef = shellQuote(`origin/${safeBranch}`);
@@ -277,20 +325,20 @@ export function renderBlockedDependencyComment({
       `- ${markdownCode(change.path)} changed ${change.fields.map(markdownCode).join(", ")}.`,
     );
   }
-  const removalSteps =
-    lockfileChanges.length > 0
-      ? [
-          "",
-          "To remove accidental lockfile residue, restore the lockfile changes from the target branch:",
-          "",
-          "```bash",
-          "git fetch origin",
-          `git checkout ${baseRef} -- ${lockfileChanges.map(shellQuote).join(" ")}`,
-          'git commit -m "Remove dependency lockfile change"',
-          "git push",
-          "```",
-        ]
-      : [];
+  const autoscrubLines = renderAutoscrubStatusLines(autoscrubStatus);
+  const removalSteps = lockfileChanges.length > 0
+    ? [
+        "",
+        "To remove accidental lockfile residue, restore the lockfile changes from the target branch:",
+        "",
+        "```bash",
+        "git fetch origin",
+        `git checkout ${baseRef} -- ${lockfileChanges.map(shellQuote).join(" ")}`,
+        'git commit -m "Remove dependency lockfile change"',
+        "git push",
+        "```",
+      ]
+    : [];
   return [
     dependencyGraphGuardMarker,
     "",
@@ -300,6 +348,7 @@ export function renderBlockedDependencyComment({
     "",
     "Detected dependency graph changes:",
     ...reasons,
+    ...autoscrubLines,
     ...removalSteps,
     "",
     "If this PR intentionally needs a dependency graph change, ask a member of `@openclaw/openclaw-secops` to comment:",
@@ -310,6 +359,36 @@ export function renderBlockedDependencyComment({
     "",
     `The action will approve the current head SHA (${markdownCode(headSha ?? "<head-sha>")}) when it reruns. A later push requires a fresh approval.`,
   ].join("\n");
+}
+
+function renderAutoscrubStatusLines(status) {
+  if (!status) {
+    return [];
+  }
+  if (status.kind === "not-attempted") {
+    return [
+      "",
+      "Auto-scrub was not attempted because this workflow can only push deterministic cleanup commits to PR branches in the main OpenClaw repository. Please remove the lockfile changes manually.",
+    ];
+  }
+  if (status.kind === "blocked-by-dependency-manifest-fields") {
+    return [
+      "",
+      "Auto-scrub was not attempted because this PR changes package manifest dependency graph fields:",
+      ...status.changes.map(
+        (change) => `- ${markdownCode(change.path)} changed ${change.fields.map(markdownCode).join(", ")}.`,
+      ),
+      "",
+      "Dependency graph changes must be reviewed by security or handled by maintainers internally. Please remove the lockfile changes manually if they were accidental.",
+    ];
+  }
+  if (status.kind === "failed") {
+    return [
+      "",
+      `Auto-scrub was attempted, but GitHub rejected the cleanup commit: ${markdownCode(status.reason)}. Please remove the lockfile changes manually.`,
+    ];
+  }
+  return [];
 }
 
 function githubApi(token) {
@@ -376,7 +455,32 @@ async function readJsonFileAtRef(api, { owner, repo, path, ref }) {
   return text ? JSON.parse(text) : null;
 }
 
+async function readContentFileMetadataAtRef(api, { owner, repo, path, ref }) {
+  if (!ref) {
+    return null;
+  }
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return api
+    .request(`/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`)
+    .catch((error) => {
+      if (error?.status === 404) {
+        return null;
+      }
+      throw error;
+    });
+}
+
 async function collectDependencyManifestChanges(api, { owner, repo, pullRequest, files }) {
+  return collectManifestChanges(api, {
+    owner,
+    repo,
+    pullRequest,
+    files,
+    fieldChanges: dependencyFieldChanges,
+  });
+}
+
+async function collectManifestChanges(api, { owner, repo, pullRequest, files, fieldChanges }) {
   const manifestPaths = files
     .map((file) => file.filename)
     .filter((filename) => typeof filename === "string" && isDependencyManifest(filename))
@@ -397,12 +501,64 @@ async function collectDependencyManifestChanges(api, { owner, repo, pullRequest,
         ref: pullRequest.head?.sha,
       }),
     ]);
-    const fields = dependencyFieldChanges(baseManifest, headManifest);
+    const fields = fieldChanges(baseManifest, headManifest);
     if (fields.length > 0) {
       changes.push({ path, fields });
     }
   }
   return changes;
+}
+
+function encodeGitRef(ref) {
+  return ref.split("/").map(encodeURIComponent).join("/");
+}
+
+async function createAutoscrubCommit(api, { owner, repo, pullRequest, lockfileChanges }) {
+  const headSha = pullRequest.head.sha;
+  const headRef = pullRequest.head.ref;
+  const headCommit = await api.request(`/repos/${owner}/${repo}/git/commits/${headSha}`);
+  const treeEntries = [];
+  for (const path of lockfileChanges) {
+    const baseFile = await readContentFileMetadataAtRef(api, {
+      owner,
+      repo,
+      path,
+      ref: pullRequest.base?.sha,
+    });
+    if (baseFile?.sha) {
+      treeEntries.push({
+        path,
+        mode: "100644",
+        type: "blob",
+        sha: baseFile.sha,
+      });
+    } else {
+      treeEntries.push({ path, sha: null });
+    }
+  }
+  const tree = await api.request(`/repos/${owner}/${repo}/git/trees`, {
+    method: "POST",
+    body: JSON.stringify({
+      base_tree: headCommit.tree.sha,
+      tree: treeEntries,
+    }),
+  });
+  const commit = await api.request(`/repos/${owner}/${repo}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({
+      message: "Remove dependency lockfile change",
+      tree: tree.sha,
+      parents: [headSha],
+    }),
+  });
+  await api.request(`/repos/${owner}/${repo}/git/refs/heads/${encodeGitRef(headRef)}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      sha: commit.sha,
+      force: false,
+    }),
+  });
+  return commit;
 }
 
 async function writeSummary(markdown) {
@@ -460,7 +616,7 @@ async function main() {
     comments.find(
       (comment) => comment.user?.login === "github-actions[bot]" && comment.body?.includes(marker),
     );
-  const existingDependencyComment = findBotComment(dependencyChangeMarker);
+  let dependencyComment = findBotComment(dependencyChangeMarker);
   const existingGuardComment = findBotComment(dependencyGraphGuardMarker);
   const labelNames = new Set(labels.map((label) => label.name));
 
@@ -479,22 +635,20 @@ async function main() {
     if (!labelNames.has(label)) {
       return;
     }
-    await api
-      .request(`${issuePath}/labels/${encodeURIComponent(label)}`, {
-        method: "DELETE",
-      })
-      .catch(ignoreUnavailableWritePermission(`label "${label}" removal`));
+    await api.request(`${issuePath}/labels/${encodeURIComponent(label)}`, {
+      method: "DELETE",
+    }).catch(ignoreUnavailableWritePermission(`label "${label}" removal`));
+    labelNames.delete(label);
   };
   const addLabelIfMissing = async (label) => {
     if (labelNames.has(label)) {
       return;
     }
-    await api
-      .request(`${issuePath}/labels`, {
-        method: "POST",
-        body: JSON.stringify({ labels: [label] }),
-      })
-      .catch(ignoreUnavailableWritePermission(`label "${label}" update`));
+    await api.request(`${issuePath}/labels`, {
+      method: "POST",
+      body: JSON.stringify({ labels: [label] }),
+    }).catch(ignoreUnavailableWritePermission(`label "${label}" update`));
+    labelNames.add(label);
   };
   const deleteCommentIfPresent = async (comment) => {
     if (!comment) {
@@ -508,26 +662,21 @@ async function main() {
   };
   const upsertComment = async (comment, body) => {
     if (comment) {
-      await api
-        .request(`/repos/${owner}/${repo}/issues/comments/${comment.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ body }),
-        })
-        .catch(ignoreUnavailableWritePermission("comment update"));
-      return;
-    }
-    await api
-      .request(`${issuePath}/comments`, {
-        method: "POST",
+      return await api.request(`/repos/${owner}/${repo}/issues/comments/${comment.id}`, {
+        method: "PATCH",
         body: JSON.stringify({ body }),
-      })
-      .catch(ignoreUnavailableWritePermission("comment creation"));
+      }).catch(ignoreUnavailableWritePermission("comment update"));
+    }
+    return await api.request(`${issuePath}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }).catch(ignoreUnavailableWritePermission("comment creation"));
   };
 
   if (dependencyGraphFiles.length === 0) {
     await removeLabelIfPresent(dependencyChangedLabel);
-    await deleteCommentIfPresent(existingDependencyComment);
-    if (existingGuardComment) {
+    await deleteCommentIfPresent(dependencyComment);
+    if (existingGuardComment && !isAutoscrubbedDependencyComment(existingGuardComment)) {
       await upsertComment(
         existingGuardComment,
         renderClearedDependencyGuardComment({ headSha: pullRequest.head?.sha }),
@@ -539,8 +688,8 @@ async function main() {
   }
 
   await addLabelIfMissing(dependencyChangedLabel);
-  await upsertComment(
-    existingDependencyComment,
+  dependencyComment = await upsertComment(
+    dependencyComment,
     renderDependencyAwarenessComment(dependencyGraphFiles),
   );
   await writeSummary(
@@ -555,13 +704,71 @@ async function main() {
   console.log(`Detected ${dependencyGraphFiles.length} dependency-related file change(s).`);
 
   if (!hasDependencyGraphChange) {
-    if (existingGuardComment) {
+    if (existingGuardComment && !isAutoscrubbedDependencyComment(existingGuardComment)) {
       await upsertComment(
         existingGuardComment,
         renderClearedDependencyGuardComment({ headSha: pullRequest.head?.sha }),
       );
     }
     return;
+  }
+
+  const autoscrubCandidate = shouldAutoscrubDependencyLockfiles({
+    lockfileChanges,
+    dependencyManifestChanges,
+  });
+  let autoscrubStatus = null;
+  if (autoscrubCandidate) {
+    if (
+      canAutoscrubPullRequest({
+        owner,
+        repo,
+        pullRequest,
+      })
+    ) {
+      try {
+        const commit = await createAutoscrubCommit(api, {
+          owner,
+          repo,
+          pullRequest,
+          lockfileChanges,
+        });
+        await removeLabelIfPresent(dependencyChangedLabel);
+        await deleteCommentIfPresent(dependencyComment);
+        await upsertComment(
+          existingGuardComment,
+          renderAutoscrubbedDependencyComment({
+            baseBranch: pullRequest.base?.ref ?? "main",
+            lockfileChanges,
+            commitSha: commit.sha,
+          }),
+        );
+        await writeSummary(
+          [
+            "## Dependency Guard",
+            "",
+            `Removed ${lockfileChanges.length} package lockfile change(s) in ${markdownCode(commit.sha)}.`,
+            "",
+            ...lockfileChanges.map((filename) => `- ${markdownCode(filename)}`),
+          ].join("\n"),
+        );
+        console.log("Removed package lockfile changes with an autoscrub commit.");
+        return;
+      } catch (error) {
+        autoscrubStatus = {
+          kind: "failed",
+          reason: error instanceof Error ? error.message : String(error),
+        };
+        console.warn(`Autoscrub failed: ${autoscrubStatus.reason}`);
+      }
+    } else {
+      autoscrubStatus = { kind: "not-attempted" };
+    }
+  } else if (lockfileChanges.length > 0 && dependencyManifestChanges.length > 0) {
+    autoscrubStatus = {
+      kind: "blocked-by-dependency-manifest-fields",
+      changes: dependencyManifestChanges,
+    };
   }
 
   const membershipCache = new Map();
@@ -592,7 +799,7 @@ async function main() {
   if (isDependencyGuardAuthorizedForHead(existingGuardComment, currentHeadSha)) {
     await writeSummary(
       [
-        "## Dependency Graph Guard",
+        "## Dependency Guard",
         "",
         `Dependency graph change remains authorized for ${markdownCode(currentHeadSha)}.`,
       ].join("\n"),
@@ -610,7 +817,7 @@ async function main() {
     await upsertComment(existingGuardComment, renderAuthorizedDependencyComment(override));
     await writeSummary(
       [
-        "## Dependency Graph Guard",
+        "## Dependency Guard",
         "",
         `Dependency graph change authorized by @${sanitizeDisplayValue(override.login)} for ${markdownCode(override.sha)}.`,
       ].join("\n"),
@@ -626,10 +833,11 @@ async function main() {
       headSha: pullRequest.head?.sha,
       lockfileChanges,
       dependencyManifestChanges,
+      autoscrubStatus,
     }),
   );
   await writeSummary(
-    "## Dependency Graph Guard\n\nDependency graph changes are blocked without a current secops override.",
+    "## Dependency Guard\n\nDependency graph changes are blocked without a current secops override.",
   );
   throw new Error("Dependency graph changes require removal or a current secops override.");
 }
