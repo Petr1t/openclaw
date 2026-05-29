@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 
 const DEFAULT_AGENT_TIMEOUT_SECONDS = 48 * 60 * 60;
-const MAX_SAFE_TIMEOUT_MS = 2_147_000_000;
+export const MAX_AGENT_TIMEOUT_MS = 2_147_000_000;
 
 const normalizeNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : undefined;
@@ -20,10 +20,10 @@ export function resolveAgentTimeoutMs(opts: {
 }): number {
   const minMs = Math.max(normalizeNumber(opts.minMs) ?? 1, 1);
   const clampTimeoutMs = (valueMs: number) =>
-    Math.min(Math.max(valueMs, minMs), MAX_SAFE_TIMEOUT_MS);
+    Math.min(Math.max(valueMs, minMs), MAX_AGENT_TIMEOUT_MS);
   const defaultMs = clampTimeoutMs(resolveAgentTimeoutSeconds(opts.cfg) * 1000);
   // Use the maximum timer-safe timeout to represent "no timeout" when explicitly set to 0.
-  const NO_TIMEOUT_MS = MAX_SAFE_TIMEOUT_MS;
+  const NO_TIMEOUT_MS = MAX_AGENT_TIMEOUT_MS;
   const overrideMs = normalizeNumber(opts.overrideMs);
   if (overrideMs !== undefined) {
     if (overrideMs === 0) {
