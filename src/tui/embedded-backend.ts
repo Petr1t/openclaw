@@ -598,15 +598,18 @@ export class EmbeddedTuiBackend implements TuiBackend {
     this.pendingLifecycleErrors.set(runId, timer);
   }
 
-  private emitChatDelta(runId: string, run: LocalRunState) {
+  private emitChatDelta(runId: string, run: LocalRunState, options?: { replace?: boolean }) {
     const projected = projectLiveAssistantBufferedText(run.buffer.trim(), {
       suppressLeadFragments: true,
     });
     const text = projected.text.trim();
-    if (!text || projected.suppress) {
+    const forceReplace = options?.replace === true && run.lastBroadcastText !== undefined;
+    if ((!text || projected.suppress) && !forceReplace) {
       return;
     }
-    const deltaPayload = resolveDeltaPayload(text, run.lastBroadcastText);
+    const deltaPayload = forceReplace
+      ? { deltaText: text, replace: true as const }
+      : resolveDeltaPayload(text, run.lastBroadcastText);
     if (!deltaPayload.deltaText && !deltaPayload.replace) {
       return;
     }
@@ -753,8 +756,9 @@ export class EmbeddedTuiBackend implements TuiBackend {
         previousText: run.buffer,
         nextText: cleaned.text,
         nextDelta: cleaned.delta,
+        nextReplace: evt.data.replace === true,
       });
-      this.emitChatDelta(evt.runId, run);
+      this.emitChatDelta(evt.runId, run, { replace: evt.data.replace === true });
       return;
     }
 

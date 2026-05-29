@@ -5,6 +5,7 @@ import {
   createDeepSeekV4OpenAICompatibleThinkingWrapper,
   createAnthropicThinkingPrefillPayloadWrapper,
   createPayloadPatchStreamWrapper,
+  createPlainTextToolCallCompatWrapper,
   defaultToolStreamExtraParams,
   isOpenAICompatibleThinkingEnabled,
   stripTrailingAnthropicAssistantPrefillWhenThinking,
@@ -83,6 +84,59 @@ describe("createAssistantStreamAccumulator", () => {
 
     expect(delta.partial.content).toEqual([]);
     expect(end.partial.content).toEqual([{ type: "text", text: "hi" }]);
+  });
+});
+
+describe("createPlainTextToolCallCompatWrapper", () => {
+  it("lets replacement deltas supersede buffered plain-text tool-call candidates", async () => {
+    const toolCallText = '[tool:read] {"path":"README.md"}';
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: toolCallText }],
+      stopReason: "stop",
+    };
+    const baseStreamFn: StreamFn = () =>
+      ({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "text_delta",
+            contentIndex: 0,
+            delta: "draft ",
+            partial: { role: "assistant", content: [] },
+          };
+          yield {
+            type: "text_delta",
+            contentIndex: 0,
+            delta: toolCallText,
+            replace: true,
+            partial: { role: "assistant", content: [] },
+          };
+          yield { type: "done", reason: "stop", message: finalMessage };
+        },
+        result: async () => finalMessage,
+      }) as ReturnType<StreamFn>;
+
+    const wrapped = createPlainTextToolCallCompatWrapper(baseStreamFn);
+    const stream = await Promise.resolve(
+      wrapped({} as never, { tools: [{ name: "read" }] } as never, {}),
+    );
+    const events: Array<Record<string, unknown>> = [];
+    for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual([
+      "text_delta",
+      "text_delta",
+      "toolcall_start",
+      "toolcall_delta",
+      "done",
+    ]);
+    expect(events.filter((event) => event.type === "text_delta")).toMatchObject([
+      { delta: "draft " },
+      { delta: "", replace: true },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "toolUse" });
   });
 });
 
