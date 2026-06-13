@@ -256,6 +256,46 @@ describe("google video generation provider", () => {
     expect(result.videos[0]?.mimeType).toBe("video/mp4");
   });
 
+  it("fails closed when a direct video uri download exceeds the configured media cap", async () => {
+    vi.spyOn(providerAuthRuntime, "resolveApiKeyForProvider").mockResolvedValue({
+      apiKey: "google-key",
+      source: "env",
+      mode: "api-key",
+    });
+    generateVideosMock.mockResolvedValue({
+      done: true,
+      response: {
+        generatedVideos: [
+          {
+            video: {
+              uri: "https://generativelanguage.googleapis.com/v1beta/files/generated-video:download?alt=media",
+              mimeType: "video/mp4",
+            },
+          },
+        ],
+      },
+    });
+    const fetchMock = vi.fn(async () => {
+      return new Response("direct-mp4-that-is-too-large", {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "video/mp4" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const provider = buildGoogleVideoGenerationProvider();
+    await expect(
+      provider.generateVideo({
+        provider: "google",
+        model: "veo-3.1-fast-generate-preview",
+        prompt: "A tiny robot watering a windowsill garden",
+        cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } },
+        durationSeconds: 3,
+      }),
+    ).rejects.toThrow(/Google generated video download exceeds/);
+  });
+
   it("stages SDK file downloads before finalizing generated video bytes", async () => {
     vi.spyOn(providerAuthRuntime, "resolveApiKeyForProvider").mockResolvedValue({
       apiKey: "google-key",
