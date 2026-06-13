@@ -13,6 +13,13 @@ import {
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 
+// Hard safety ceiling for the matrix-js-sdk global fetch, which buffers every
+// response body into memory. Without it a malicious/compromised homeserver can
+// stream an unbounded body and OOM the process. Set well above realistic
+// client-server API and media responses; per-media limits are enforced
+// separately on the deliberate media paths (monitor/media, profile avatar).
+const MATRIX_GUARDED_FETCH_MAX_BYTES = 256 * 1024 * 1024;
+
 type QueryValue =
   | string
   | number
@@ -243,7 +250,14 @@ export function createMatrixGuardedFetch(params: {
     });
 
     try {
-      const body = await response.arrayBuffer();
+      const buffered = await readResponseWithLimit(response, MATRIX_GUARDED_FETCH_MAX_BYTES, {
+        onOverflow: ({ maxBytes, size }) =>
+          new Error(`Matrix response exceeds size limit (${size} bytes > ${maxBytes} bytes)`),
+      });
+      const body = buffered.buffer.slice(
+        buffered.byteOffset,
+        buffered.byteOffset + buffered.byteLength,
+      ) as ArrayBuffer;
       return buildBufferedResponse({
         source: response,
         body,
