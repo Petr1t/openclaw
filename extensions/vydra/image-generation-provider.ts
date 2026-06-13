@@ -90,6 +90,7 @@ export function buildVydraImageGenerationProvider(): ImageGenerationProvider {
         const image = await downloadVydraAsset({
           url: imageUrl,
           kind: "image",
+          cfg: req.cfg,
           timeoutMs: req.timeoutMs,
           fetchFn,
         });

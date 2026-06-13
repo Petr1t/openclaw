@@ -135,6 +135,9 @@ export function buildVydraSpeechProvider(): SpeechProviderPlugin {
         const audio = await downloadVydraAsset({
           url: audioUrl,
           kind: "audio",
+          // Speech requests do not carry the full config; the default cap bounds
+          // the (small) generated audio download.
+          cfg: undefined,
           timeoutMs: req.timeoutMs,
           fetchFn,
         });

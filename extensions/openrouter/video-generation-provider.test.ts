@@ -723,6 +723,29 @@ describe("openrouter video generation provider", () => {
     expect(video.fileName).toBe("video-1.webm");
   });
 
+  it("rejects generated video downloads that exceed the configured media cap", async () => {
+    postJsonRequestMock.mockResolvedValue(
+      releasedJson({
+        id: "job-123",
+        polling_url: "https://openrouter.ai/api/v1/videos/job-123",
+        status: "completed",
+      }),
+    );
+    fetchWithTimeoutGuardedMock.mockResolvedValueOnce(
+      releasedVideo({ contentType: "video/mp4", bytes: "x".repeat(4096) }),
+    );
+
+    const provider = buildOpenRouterVideoGenerationProvider();
+    await expect(
+      provider.generateVideo({
+        provider: "openrouter",
+        model: "google/veo-3.1",
+        prompt: "A tiny robot watering a bonsai",
+        cfg: { agents: { defaults: { mediaMaxMb: 0.000_001 } } } as never,
+      }),
+    ).rejects.toThrow(/OpenRouter generated video download exceeds \d+ bytes/);
+  });
+
   it("rejects video reference inputs", async () => {
     const provider = buildOpenRouterVideoGenerationProvider();
 

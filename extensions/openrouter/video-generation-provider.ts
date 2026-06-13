@@ -10,6 +10,7 @@ import {
   sanitizeConfiguredModelProviderRequest,
   waitProviderOperationPollInterval,
 } from "openclaw/plugin-sdk/provider-http";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type {
   GeneratedVideoAsset,
@@ -30,6 +31,7 @@ export { listOpenRouterVideoModelCatalog } from "./video-model-catalog.js";
 const DEFAULT_MODEL = "google/veo-3.1-fast";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_HTTP_TIMEOUT_MS = 60_000;
+const DEFAULT_GENERATED_VIDEO_MAX_BYTES = 16 * 1024 * 1024;
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_ATTEMPTS = 120;
 const SUPPORTED_ASPECT_RATIOS = ["16:9", "9:16"] as const;
@@ -349,6 +351,17 @@ function resolveOpenRouterContentUrl(params: { baseUrl: string; jobId: string })
   );
 }
 
+// Bound in-memory size of a generated video download. The content endpoint
+// requires auth headers, so an oversized body fails the download rather than
+// falling back to a URL. Mirrors the fal/google video provider caps.
+function resolveGeneratedVideoMaxBytes(req: VideoGenerationRequest): number {
+  const configured = req.cfg.agents?.defaults?.mediaMaxMb;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured * 1024 * 1024);
+  }
+  return DEFAULT_GENERATED_VIDEO_MAX_BYTES;
+}
+
 async function downloadOpenRouterVideo(params: {
   url: string;
   baseUrl: string;
@@ -356,15 +369,24 @@ async function downloadOpenRouterVideo(params: {
   timeoutMs: number;
   allowPrivateNetwork: boolean;
   dispatcherPolicy: OpenRouterVideoDispatcherPolicy;
+  maxBytes: number;
 }): Promise<GeneratedVideoAsset> {
   const { response, release } = await fetchOpenRouterVideoGet({
-    ...params,
+    url: params.url,
+    baseUrl: params.baseUrl,
+    headers: params.headers,
+    timeoutMs: params.timeoutMs,
+    allowPrivateNetwork: params.allowPrivateNetwork,
+    dispatcherPolicy: params.dispatcherPolicy,
     auditContext: "openrouter-video-download",
   });
   try {
     await assertOkOrThrowHttpError(response, "OpenRouter generated video download failed");
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await readResponseWithLimit(response, params.maxBytes, {
+      onOverflow: ({ maxBytes }) =>
+        new Error(`OpenRouter generated video download exceeds ${maxBytes} bytes`),
+    });
     return {
       buffer,
       mimeType,
@@ -517,6 +539,7 @@ export function buildOpenRouterVideoGenerationProvider(): VideoGenerationProvide
           }),
           allowPrivateNetwork,
           dispatcherPolicy,
+          maxBytes: resolveGeneratedVideoMaxBytes(req),
         });
 
         return {

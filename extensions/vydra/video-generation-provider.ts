@@ -126,6 +126,7 @@ export function buildVydraVideoGenerationProvider(): VideoGenerationProvider {
         const video = await downloadVydraAsset({
           url: videoUrl,
           kind: "video",
+          cfg: req.cfg,
           timeoutMs: createProviderOperationTimeoutResolver({
             deadline,
             defaultTimeoutMs: DEFAULT_VYDRA_VIDEO_TIMEOUT_MS,
