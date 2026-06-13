@@ -1,3 +1,4 @@
+import { parseMediaContentLength } from "openclaw/plugin-sdk/media-runtime";
 import { getMSTeamsRuntime } from "../runtime.js";
 import { ensureUserAgentHeader } from "../user-agent.js";
 import {
@@ -164,12 +165,16 @@ async function saveBotFrameworkAttachmentView(params: {
     });
     return undefined;
   }
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > params.maxBytes) {
-    await response.body?.cancel();
-    return undefined;
-  }
   try {
+    // Strictly validate the claimed size before downloading. Raw Number()
+    // coercion accepts "1e9"/" 5 "/"-1", letting a malicious content-length
+    // bypass the pre-check; parseMediaContentLength throws on malformed input
+    // (handled by the catch below) and saveResponseMedia still caps the stream.
+    const contentLength = parseMediaContentLength(response.headers.get("content-length") ?? null);
+    if (contentLength !== null && contentLength > params.maxBytes) {
+      await response.body?.cancel();
+      return undefined;
+    }
     return await getMSTeamsRuntime().channel.media.saveResponseMedia(response, {
       sourceUrl: url,
       filePathHint: params.fileNameHint,

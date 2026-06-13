@@ -295,6 +295,82 @@ describe("downloadMSTeamsBotFrameworkAttachment", () => {
     expect(runtime.saveCalls).toHaveLength(0);
   });
 
+  it("skips view downloads whose content-length header exceeds maxBytes", async () => {
+    const info = {
+      name: "report.pdf",
+      type: "application/pdf",
+      views: [{ viewId: "original", size: 1024 }],
+    };
+    const fetchFn = createMockFetch([
+      {
+        match: /\/v3\/attachments\/cl-1$/,
+        response: new Response(JSON.stringify(info), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: /\/v3\/attachments\/cl-1\/views\/original$/,
+        response: new Response("PDFBYTES", {
+          status: 200,
+          headers: { "content-length": "50000000" },
+        }),
+      },
+    ]);
+
+    const media = await downloadMSTeamsBotFrameworkAttachment({
+      serviceUrl: "https://smba.trafficmanager.net/amer",
+      attachmentId: "cl-1",
+      tokenProvider: buildTokenProvider(),
+      maxBytes: 10_000_000,
+      fetchFn,
+      fetchFnSupportsDispatcher: true,
+      resolveFn: resolvePublicHost,
+    });
+
+    expect(media).toBeUndefined();
+    expect(runtime.saveCalls).toHaveLength(0);
+  });
+
+  it("rejects view downloads with a malformed content-length header", async () => {
+    const info = {
+      name: "report.pdf",
+      type: "application/pdf",
+      views: [{ viewId: "original", size: 1024 }],
+    };
+    const fetchFn = createMockFetch([
+      {
+        match: /\/v3\/attachments\/cl-2$/,
+        response: new Response(JSON.stringify(info), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      },
+      {
+        match: /\/v3\/attachments\/cl-2\/views\/original$/,
+        response: new Response("PDFBYTES", {
+          status: 200,
+          // Raw Number("-1") coerces to -1 (<= maxBytes) and silently proceeds
+          // to save; strict parsing rejects the suspicious header instead.
+          headers: { "content-length": "-1" },
+        }),
+      },
+    ]);
+
+    const media = await downloadMSTeamsBotFrameworkAttachment({
+      serviceUrl: "https://smba.trafficmanager.net/amer",
+      attachmentId: "cl-2",
+      tokenProvider: buildTokenProvider(),
+      maxBytes: 10_000_000,
+      fetchFn,
+      fetchFnSupportsDispatcher: true,
+      resolveFn: resolvePublicHost,
+    });
+
+    expect(media).toBeUndefined();
+    expect(runtime.saveCalls).toHaveLength(0);
+  });
+
   it("returns undefined when no views are returned", async () => {
     const info = { name: "nothing", type: "application/pdf", views: [] };
     const fetchFn = createMockFetch([
