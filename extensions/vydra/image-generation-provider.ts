@@ -6,6 +6,7 @@ import {
   downloadVydraAsset,
   extractVydraResultUrls,
   resolveCompletedVydraPayload,
+  resolveVydraMediaMaxBytes,
   resolveVydraResponseJobId,
   resolveVydraResponseStatus,
   resolveVydraRequestContext,
@@ -92,6 +93,7 @@ export function buildVydraImageGenerationProvider(): ImageGenerationProvider {
           kind: "image",
           timeoutMs: req.timeoutMs,
           fetchFn,
+          maxBytes: resolveVydraMediaMaxBytes(req.cfg),
         });
         return {
           images: [

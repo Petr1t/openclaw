@@ -11,6 +11,7 @@ import {
   type ProviderOperationDeadline,
   type ProviderOperationTimeoutMs,
 } from "openclaw/plugin-sdk/provider-http";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -22,6 +23,9 @@ export const DEFAULT_VYDRA_VIDEO_MODEL = "veo3";
 export const DEFAULT_VYDRA_SPEECH_MODEL = "elevenlabs/tts";
 export const DEFAULT_VYDRA_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 const DEFAULT_HTTP_TIMEOUT_MS = 120_000;
+// Generous safety ceiling guarding against unbounded download bodies; an
+// explicit mediaMaxMb cap still takes precedence via resolveVydraMediaMaxBytes.
+export const DEFAULT_VYDRA_MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 const POLL_INTERVAL_MS = 2_500;
 const MAX_POLL_ATTEMPTS = 120;
 type VydraAuthStore = Parameters<typeof resolveApiKeyForProvider>[0]["store"];
@@ -210,11 +214,20 @@ function resolveVydraHttpTimeoutMs(timeoutMs: ProviderOperationTimeoutMs | undef
   return resolved;
 }
 
+export function resolveVydraMediaMaxBytes(cfg: OpenClawConfig | undefined): number {
+  const configured = cfg?.agents?.defaults?.mediaMaxMb;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured * 1024 * 1024);
+  }
+  return DEFAULT_VYDRA_MEDIA_MAX_BYTES;
+}
+
 export async function downloadVydraAsset(params: {
   url: string;
   kind: VydraMediaKind;
   timeoutMs?: ProviderOperationTimeoutMs;
   fetchFn: typeof fetch;
+  maxBytes: number;
 }): Promise<{ buffer: Buffer; mimeType: string; fileName: string }> {
   const response = await fetchWithTimeout(
     params.url,
@@ -226,11 +239,14 @@ export async function downloadVydraAsset(params: {
   const mimeType =
     response.headers.get("content-type")?.trim() ||
     (params.kind === "image" ? "image/png" : params.kind === "audio" ? "audio/mpeg" : "video/mp4");
-  const arrayBuffer = await response.arrayBuffer();
+  const buffer = await readResponseWithLimit(response, params.maxBytes, {
+    onOverflow: ({ maxBytes }) =>
+      new Error(`Vydra ${params.kind} download exceeds ${maxBytes} bytes`),
+  });
   const extension = resolveVydraFileExtension(params.kind, mimeType);
   const fileStem = params.kind === "image" ? "image" : params.kind === "audio" ? "audio" : "video";
   return {
-    buffer: Buffer.from(arrayBuffer),
+    buffer,
     mimeType,
     fileName: `${fileStem}-1.${extension}`,
   };
