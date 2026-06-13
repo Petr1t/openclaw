@@ -1,5 +1,5 @@
 import { resolveProviderRequestHeaders } from "../agents/provider-request-config.js";
-import { parseStrictFiniteNumber } from "./parse-finite-number.js";
+import { parseStrictFiniteNumber, parseStrictPositiveInteger } from "./parse-finite-number.js";
 import {
   buildUsageHttpErrorSnapshot,
   fetchJson,
@@ -99,26 +99,35 @@ export async function fetchCodexUsage(
 
   if (data.rate_limit?.primary_window) {
     const pw = data.rate_limit.primary_window;
-    const windowHours = Math.round((pw.limit_window_seconds || 10800) / 3600);
+    // Remote JSON: reject NaN/Infinity/negative seconds before arithmetic so a
+    // hostile/buggy response cannot produce an "Infinityh" label or a reset
+    // timestamp that never expires.
+    const windowHours = Math.round(
+      (parseStrictPositiveInteger(pw.limit_window_seconds) ?? 10800) / 3600,
+    );
+    const resetAtSeconds = parseStrictPositiveInteger(pw.reset_at);
     windows.push({
       label: `${windowHours}h`,
       usedPercent: clampPercent(pw.used_percent || 0),
-      resetAt: pw.reset_at ? pw.reset_at * 1000 : undefined,
+      resetAt: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : undefined,
     });
   }
 
   if (data.rate_limit?.secondary_window) {
     const sw = data.rate_limit.secondary_window;
-    const windowHours = Math.round((sw.limit_window_seconds || 86400) / 3600);
+    const windowHours = Math.round(
+      (parseStrictPositiveInteger(sw.limit_window_seconds) ?? 86400) / 3600,
+    );
+    const resetAtSeconds = parseStrictPositiveInteger(sw.reset_at);
     const label = resolveSecondaryWindowLabel({
       windowHours,
-      primaryResetAt: data.rate_limit?.primary_window?.reset_at,
-      secondaryResetAt: sw.reset_at,
+      primaryResetAt: parseStrictPositiveInteger(data.rate_limit?.primary_window?.reset_at),
+      secondaryResetAt: resetAtSeconds,
     });
     windows.push({
       label,
       usedPercent: clampPercent(sw.used_percent || 0),
-      resetAt: sw.reset_at ? sw.reset_at * 1000 : undefined,
+      resetAt: resetAtSeconds !== undefined ? resetAtSeconds * 1000 : undefined,
     });
   }
 

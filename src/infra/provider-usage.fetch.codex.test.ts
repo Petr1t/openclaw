@@ -66,6 +66,24 @@ describe("fetchCodexUsage", () => {
     ]);
   });
 
+  it("rejects non-finite or negative remote window numerics", async () => {
+    // JSON.parse("1e999") yields Infinity, so a hostile body can smuggle a
+    // non-finite numeric past the typed shape. Negative values are valid JSON.
+    const hostileBody =
+      '{"rate_limit":{' +
+      '"primary_window":{"limit_window_seconds":1e999,"used_percent":35.5,"reset_at":1e999},' +
+      '"secondary_window":{"limit_window_seconds":-5,"used_percent":75,"reset_at":-1}}}';
+    const mockFetch = createProviderUsageFetch(async () => makeResponse(200, hostileBody));
+
+    const result = await fetchCodexUsage("token", undefined, 5000, mockFetch);
+
+    // Falls back to defaults (10800s -> 3h, 86400s -> 24h "Day") with no resetAt.
+    expect(result.windows).toEqual([
+      { label: "3h", usedPercent: 35.5, resetAt: undefined },
+      { label: "Day", usedPercent: 75, resetAt: undefined },
+    ]);
+  });
+
   it("labels weekly secondary window as Week", async () => {
     const mockFetch = createProviderUsageFetch(async () =>
       makeResponse(200, {
