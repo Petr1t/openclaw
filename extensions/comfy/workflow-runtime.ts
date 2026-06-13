@@ -12,6 +12,7 @@ import {
   normalizeBaseUrl,
   resolveProviderHttpRequestConfig,
 } from "openclaw/plugin-sdk/provider-http";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   normalizeSecretInputString,
   resolveSecretInputString,
@@ -39,6 +40,17 @@ const DEFAULT_PROMPT_INPUT_NAME = "text";
 const DEFAULT_INPUT_IMAGE_INPUT_NAME = "image";
 const DEFAULT_POLL_INTERVAL_MS = 1_500;
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_GENERATED_MEDIA_MAX_BYTES = 16 * 1024 * 1024;
+
+// Bound in-memory size of a generated output download. Mirrors the
+// fal/google/openrouter/vydra generated-media caps.
+function resolveComfyGeneratedMediaMaxBytes(cfg: OpenClawConfig | undefined): number {
+  const configured = cfg?.agents?.defaults?.mediaMaxMb;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured * 1024 * 1024);
+  }
+  return DEFAULT_GENERATED_MEDIA_MAX_BYTES;
+}
 
 export const DEFAULT_COMFY_MODEL = "workflow";
 
@@ -505,6 +517,7 @@ async function downloadOutputFile(params: {
   file: ComfyOutputFile;
   mode: ComfyMode;
   capability: ComfyCapability;
+  maxBytes: number;
 }): Promise<{ buffer: Buffer; mimeType: string }> {
   const fileName =
     normalizeOptionalString(params.file.filename) || normalizeOptionalString(params.file.name);
@@ -556,8 +569,12 @@ async function downloadOutputFile(params: {
         const mimeType =
           normalizeOptionalString(redirected.response.headers.get("content-type")) ||
           "application/octet-stream";
+        const buffer = await readResponseWithLimit(redirected.response, params.maxBytes, {
+          onOverflow: ({ maxBytes }) =>
+            new Error(`Comfy output download exceeds ${maxBytes} bytes`),
+        });
         return {
-          buffer: Buffer.from(await redirected.response.arrayBuffer()),
+          buffer,
           mimeType,
         };
       } finally {
@@ -569,8 +586,11 @@ async function downloadOutputFile(params: {
     const mimeType =
       normalizeOptionalString(firstResponse.response.headers.get("content-type")) ||
       "application/octet-stream";
+    const buffer = await readResponseWithLimit(firstResponse.response, params.maxBytes, {
+      onOverflow: ({ maxBytes }) => new Error(`Comfy output download exceeds ${maxBytes} bytes`),
+    });
     return {
-      buffer: Buffer.from(await firstResponse.response.arrayBuffer()),
+      buffer,
       mimeType,
     };
   } finally {
@@ -805,6 +825,7 @@ export async function runComfyWorkflow(params: {
       file: output.file,
       mode,
       capability: params.capability,
+      maxBytes: resolveComfyGeneratedMediaMaxBytes(params.cfg),
     });
     assetIndex += 1;
     const originalName =
