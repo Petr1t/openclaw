@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import { normalizeRequestInitHeadersForFetch } from "../infra/fetch-headers.js";
+import { readResponseWithLimit } from "../media/read-response-with-limit.js";
 import { resolveDebugProxySettings, type DebugProxySettings } from "./env.js";
 import {
   closeDebugProxyCaptureStore,
@@ -16,6 +17,9 @@ import type {
 } from "./types.js";
 
 const DEBUG_PROXY_FETCH_PATCH_KEY = Symbol.for("openclaw.debugProxy.fetchPatch");
+// Cap captured response bodies so a large proxied response can't OOM the debug
+// capture path; overflow is recorded as a capture error via the existing catch.
+const MAX_CAPTURED_BODY_BYTES = 64 * 1024 * 1024;
 const REDACTED_CAPTURE_HEADER_VALUE = "[REDACTED]";
 const SENSITIVE_CAPTURE_HEADER_NAMES = new Set([
   "authorization",
@@ -378,9 +382,10 @@ export function captureHttpExchange(
     });
     return;
   }
-  void params.response
-    .clone()
-    .arrayBuffer()
+  void readResponseWithLimit(params.response.clone(), MAX_CAPTURED_BODY_BYTES, {
+    onOverflow: ({ maxBytes, size }) =>
+      new Error(`proxy capture body exceeds ${maxBytes} bytes (${size} bytes)`),
+  })
     .then((buffer) => {
       const responsePayload = runtime.persistEventPayload(store, {
         data: Buffer.from(buffer),
