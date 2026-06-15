@@ -533,6 +533,44 @@ describe("model-pricing-cache", () => {
     expect(health.sources[0]?.detail).toContain("invalid content-length header: 1e3");
   });
 
+  it("records oversized pricing bodies that omit content-length as source failures", async () => {
+    const config = {
+      agents: { defaults: { model: { primary: "custom/gpt-remote" } } },
+      models: {
+        providers: {
+          custom: {
+            baseUrl: "https://models.example/v1",
+            api: "openai-completions",
+            models: [{ id: "gpt-remote" }],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    // Body exceeds MAX_PRICING_CATALOG_BYTES (5 MiB) but omits content-length, so the
+    // stream cap must reject it instead of buffering the whole body.
+    const oversized = "x".repeat(5 * 1024 * 1024 + 1);
+    const fetchImpl = withFetchPreconnect(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("openrouter.ai")) {
+        return new Response(oversized, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await refreshGatewayModelPricingCache({ config, fetchImpl });
+
+    const health = getGatewayModelPricingHealth();
+    expect(health.state).toBe("degraded");
+    expect(health.sources[0]?.source).toBe("openrouter");
+    expect(health.sources[0]?.detail).toContain("too large");
+  });
+
   it("records and clears scheduled refresh rejections for health surfaces", async () => {
     vi.useFakeTimers();
     try {
