@@ -232,6 +232,26 @@ describe("createMatrixGuardedFetch", () => {
     );
   });
 
+  it("returns the upstream body intact through the bounded buffered response", async () => {
+    const payload = JSON.stringify({ hello: "world", nested: [1, 2, 3] });
+    const runtimeFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(payload, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    stubRuntimeFetch(runtimeFetch);
+
+    const guardedFetch = createMatrixGuardedFetch({
+      ssrfPolicy: { allowPrivateNetwork: true },
+    });
+
+    const response = await guardedFetch("http://127.0.0.1:8008/_matrix/client/v3/account/whoami");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(payload);
+  });
+
   it("leaves non-sync Matrix requests unchanged", async () => {
     const runtimeFetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

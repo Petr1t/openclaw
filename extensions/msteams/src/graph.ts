@@ -1,4 +1,5 @@
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { fetchWithSsrFGuard, type MSTeamsConfig } from "../runtime-api.js";
 import { GRAPH_ROOT } from "./attachments/shared.js";
 import { resolveMSTeamsSdkCloudOptions } from "./cloud.js";
@@ -10,6 +11,9 @@ import { buildUserAgent } from "./user-agent.js";
 
 const GRAPH_BETA = "https://graph.microsoft.com/beta";
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+// Hard safety ceiling: the Graph response body is buffered fully in memory, so
+// a hostile response must not stream an unbounded body and OOM the process.
+const MAX_BUFFERED_GRAPH_RESPONSE_BYTES = 256 * 1024 * 1024;
 
 export type GraphUser = {
   id?: string;
@@ -72,7 +76,17 @@ async function requestGraph(params: {
         `${params.errorPrefix ?? "Graph"} ${params.path} failed`,
       );
     }
-    const body = NULL_BODY_STATUSES.has(response.status) ? null : await response.arrayBuffer();
+    let body: ArrayBuffer | null = null;
+    if (!NULL_BODY_STATUSES.has(response.status)) {
+      const bytes = await readResponseWithLimit(response, MAX_BUFFERED_GRAPH_RESPONSE_BYTES, {
+        onOverflow: ({ maxBytes, size }) =>
+          new Error(`Graph response exceeds size limit (${size} bytes > ${maxBytes} bytes)`),
+      });
+      body = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+    }
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,

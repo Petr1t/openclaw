@@ -553,6 +553,42 @@ describe("openrouter video generation provider", () => {
     });
   });
 
+  it("returns URL-only videos when generated video downloads exceed the configured media cap", async () => {
+    postJsonRequestMock.mockResolvedValue(
+      releasedJson({
+        id: "job-123",
+        polling_url: "/api/v1/videos/job-123",
+        status: "pending",
+      }),
+    );
+    fetchWithTimeoutGuardedMock
+      .mockResolvedValueOnce(
+        releasedJson({
+          id: "job-123",
+          status: "completed",
+          model: "google/veo-3.1",
+          unsigned_urls: ["/api/v1/videos/job-123/content?index=0"],
+        }),
+      )
+      .mockResolvedValueOnce(releasedVideo({ contentType: "video/mp4", bytes: "too-large" }));
+
+    const provider = buildOpenRouterVideoGenerationProvider();
+    const result = await provider.generateVideo({
+      provider: "openrouter",
+      model: "google/veo-3.1",
+      prompt: "A chrome sphere glides across a quiet moonlit beach",
+      cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } } as never,
+    });
+
+    expect(result.videos).toEqual([
+      {
+        url: "/api/v1/videos/job-123/content?index=0",
+        mimeType: "video/mp4",
+        fileName: "video-1.mp4",
+      },
+    ]);
+  });
+
   it("rejects malformed numeric seed values before submitting video jobs", async () => {
     const provider = buildOpenRouterVideoGenerationProvider();
     await expect(

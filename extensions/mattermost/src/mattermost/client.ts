@@ -1,3 +1,4 @@
+import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { sleep } from "openclaw/plugin-sdk/runtime-env";
 import {
   fetchWithSsrFGuard,
@@ -112,6 +113,9 @@ export function createMattermostClient(params: {
   // Body is buffered before releasing the dispatcher so callers get a complete Response.
   // Null-body status codes per Fetch spec — Response constructor rejects a body for these.
   const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+  // Hard safety ceiling: the body is buffered fully in memory, so a hostile or
+  // compromised server must not stream an unbounded body and OOM the process.
+  const MAX_BUFFERED_RESPONSE_BYTES = 256 * 1024 * 1024;
 
   const guardedFetchImpl: MattermostFetch = async (input, init) => {
     const url =
@@ -123,10 +127,18 @@ export function createMattermostClient(params: {
       policy: ssrfPolicyFromPrivateNetworkOptIn(params.allowPrivateNetwork),
     });
     try {
-      const bodyBytes = NULL_BODY_STATUSES.has(response.status)
-        ? null
-        : await response.arrayBuffer();
-      return new Response(bodyBytes, { status: response.status, headers: response.headers });
+      if (NULL_BODY_STATUSES.has(response.status)) {
+        return new Response(null, { status: response.status, headers: response.headers });
+      }
+      const bytes = await readResponseWithLimit(response, MAX_BUFFERED_RESPONSE_BYTES, {
+        onOverflow: ({ maxBytes, size }) =>
+          new Error(`Mattermost response exceeds size limit (${size} bytes > ${maxBytes} bytes)`),
+      });
+      const body = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+      return new Response(body, { status: response.status, headers: response.headers });
     } finally {
       await release();
     }

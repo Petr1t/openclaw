@@ -72,6 +72,29 @@ describe("vydra video-generation provider", () => {
     });
   });
 
+  it("fails closed when the downloaded video exceeds the configured media cap", async () => {
+    stubVydraApiKey();
+    stubFetch(
+      jsonResponse({ jobId: "job-123", status: "processing" }),
+      jsonResponse({
+        jobId: "job-123",
+        status: "completed",
+        videoUrl: "https://cdn.vydra.ai/generated/test.mp4",
+      }),
+      binaryResponse("webm-data-that-is-too-large", "video/webm"),
+    );
+
+    const provider = buildVydraVideoGenerationProvider();
+    await expect(
+      provider.generateVideo({
+        provider: "vydra",
+        model: "veo3",
+        prompt: "tiny city at sunrise",
+        cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } },
+      }),
+    ).rejects.toThrow(/Vydra video download exceeds/);
+  });
+
   it("requires a remote image url for kling", async () => {
     stubVydraApiKey();
     vi.stubGlobal("fetch", vi.fn());
