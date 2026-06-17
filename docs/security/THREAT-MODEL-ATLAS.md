@@ -9,7 +9,7 @@ read_when:
 ## MITRE ATLAS framework
 
 **Version:** 1.0-draft
-**Last Updated:** 2026-02-04
+**Last Updated:** 2026-06-16
 **Methodology:** MITRE ATLAS + Data Flow Diagrams
 **Framework:** [MITRE ATLAS](https://atlas.mitre.org/) (Adversarial Threat Landscape for AI Systems)
 
@@ -437,6 +437,18 @@ Nothing is explicitly out of scope for this threat model.
 | **Residual Risk**       | Medium - Provider filters imperfect                     |
 | **Recommendations**     | Output filtering layer, user controls                   |
 
+#### T-IMPACT-004: Memory Exhaustion via Unbounded Response Reads
+
+| Attribute               | Value                                                                                                                                                                                                                                                                                         |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ATLAS ID**            | AML.T0029 - Denial of ML Service                                                                                                                                                                                                                                                              |
+| **Description**         | A hostile or compromised upstream returns an oversized response body that is buffered fully into memory, exhausting RAM and crashing the process (OOM)                                                                                                                                        |
+| **Attack Vector**       | Malicious generated-media/download URL, federated or self-hosted server, or provider API streaming a multi-GB body to a fetch that calls `.arrayBuffer()` / `.text()` / `.json()` without a size bound; a lying or omitted `Content-Length` defeats pre-buffer length checks                  |
+| **Affected Components** | Generated-media providers (OpenRouter, Google, Vydra, Comfy), guarded-fetch adapters (Matrix, Mattermost, MS Teams), gateway model-pricing cache, debug proxy-capture, web-fetch and media fetch family                                                                                       |
+| **Current Mitigations** | `readResponseWithLimit()` stream-and-bound across the web-fetch/media family and all surfaces above (2026-06 re-audit); honors `agents.defaults.mediaMaxMb` with a safety ceiling; opengrep rule GHSA-P536-VVPP-9MC8 detects unbounded reads in `src/web-fetch`, `src/media`, `src/infra/net` |
+| **Residual Risk**       | Low - covered surfaces are bounded; the opengrep rule scope excludes `extensions/`, so new sibling download paths can regress undetected                                                                                                                                                      |
+| **Recommendations**     | Extend the opengrep unbounded-response-read rule to provider and channel download paths; default-bound any new response-buffering helper                                                                                                                                                      |
+
 ---
 
 ## 4. ClawHub Supply Chain Analysis
@@ -507,6 +519,7 @@ Current patterns in `moderation.ts`:
 | T-ACCESS-001  | Low        | High     | **Medium**   | P2       |
 | T-ACCESS-002  | Low        | High     | **Medium**   | P2       |
 | T-PERSIST-002 | Low        | High     | **Medium**   | P2       |
+| T-IMPACT-004  | Low        | High     | **Medium**   | P2       |
 
 ### 5.2 Critical Path Attack Chains
 
@@ -572,6 +585,7 @@ T-EXEC-002 → T-EXFIL-001 → External exfiltration
 | AML.T0009     | Collection                     | T-EXFIL-001, T-EXFIL-002, T-EXFIL-003                            |
 | AML.T0010.001 | Supply Chain: AI Software      | T-PERSIST-001, T-PERSIST-002                                     |
 | AML.T0010.002 | Supply Chain: Data             | T-PERSIST-003                                                    |
+| AML.T0029     | Denial of ML Service           | T-IMPACT-004                                                     |
 | AML.T0031     | Erode AI Model Integrity       | T-IMPACT-001, T-IMPACT-002, T-IMPACT-003                         |
 | AML.T0040     | AI Model Inference API Access  | T-ACCESS-001, T-ACCESS-002, T-ACCESS-003, T-DISC-001, T-DISC-002 |
 | AML.T0043     | Craft Adversarial Data         | T-EXEC-004, T-EVADE-001, T-EVADE-002                             |
